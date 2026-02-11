@@ -1,0 +1,19 @@
+=search-scope-mode= – Emacs extension to search and replace things in a scope
+
+* Background
+
+I had started to develop =search-scope-mode= as a part of [[https://github.com/zepp/.emacs.d][my]] Emacs configuration then decided to move one to a standalone repository. It was developed from scratch to make my duties easier.
+
+It is build on top of following Emacs extensions:
++ =project= – default extension to work with a source code tree
++ =thingatpt= – extension to get a ‘thing’ at point (symbol, word, etc)
+
+Core concept is to reduce a number of files and directories (search scope) as much as possible to make a search more effective and precise.
+
+* Terms
+
++ scope – part of a project to search in
++ root – root directory of a scope
++ composite – several files (parts) that should be considered as a whole
+
+Scope could contain a number of composites.
