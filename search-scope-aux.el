@@ -11,7 +11,7 @@
 
 ;;;###autoload
 (defun search-scope-compose-ag-args (thing scope)
-  (let ((regexp (search-scope-thing-to-regexp thing)))
+  (let ((regexp (search-scope-thing-to-regexp thing t)))
     (list
      ;; do not quote thing since a literal search to be done
      (if regexp regexp (car thing))

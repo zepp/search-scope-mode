@@ -146,7 +146,7 @@ major mode or a list of modes is expected"
 (defun search-scope-compose-rgrep-args (thing scope)
   "Composes an argument list for `rgrep' and `rzgrep' commands"
 
-  (let ((regexp (search-scope-thing-to-regexp thing t))
+  (let ((regexp (search-scope-thing-to-regexp thing t t))
         (ext (alist-get 'ext scope "*")))
     (list (if regexp regexp (search-scope-quote thing))
           (concat "*." ext)
@@ -361,6 +361,20 @@ if ABBREVIATE is non nil."
              names)
     composites))
 
+(defun search-scope-check-composite (scope path &optional no-cache)
+  "Checks that BUFFER is a part of a composite in SCOPE."
+
+  (cl-assert (file-name-absolute-p path))
+  (let ((relative (search-scope-relative-name scope path))
+        (composite (alist-get 'composite scope)))
+    (if (and composite (null no-cache))
+        scope
+      (let* ((composites (search-scope-find-composites scope))
+             (composite (assoc-default (file-name-base relative) composites)))
+        (when composite
+          (setf (alist-get 'composite scope) composite)
+          scope)))))
+
 (defun search-scope-composite-buffers (scope &optional head)
   "visits composite parts and returns a list of buffers"
 
@@ -369,9 +383,11 @@ if ABBREVIATE is non nil."
                           (let ((path (search-scope-expand-name scope relative)))
                             (or (get-file-buffer path)
                                 (with-current-buffer (find-file-noselect path)
-                                  (setf (alist-get 'composite search-scope) composite)
+                                  (let ((scope (search-scope-link-buffer (current-buffer))))
+                                    (setf (alist-get 'composite scope) composite
+                                          search-scope scope))
                                   (current-buffer)))))))
-    (if head
+    (if (and composite head)
         (let* ((buffers (mapcar get-or-find composite))
                (pos (seq-position buffers head))
                (count (- (length buffers) pos)))
@@ -380,13 +396,28 @@ if ABBREVIATE is non nil."
             (nconc (last buffers count) (nbutlast buffers count))))
       (mapcar get-or-find composite))))
 
-(defun search-scope-scattered-occurrences (thing buffers &optional buf-limit)
-  "Searches occurrence of THING in each of composite buffers or in
-BUFFERS list."
+(defun search-scope-recompose-occurrences (buffer occurrences)
+  "Recomposes BUFFER and OCCURRENCES to a list of alists."
 
-  (mapcar
+  (mapcar #'(lambda (occur)
+              (let ((alist))
+                (push (cons 'buffer buffer) alist)
+                (push (cons 'match (nth 0 occur)) alist)
+                (push (cons 'position (nth 1 occur)) alist)
+                (push (cons 'match-offsets (nth 2 occur)) alist)
+                (push (cons 'line-offsets (nth 3 occur)) alist)
+                (nreverse alist)))
+          occurrences))
+
+(defun search-scope-scattered-occurrences (thing buffers &optional limit)
+  "Searches occurrences of THING in BUFFERS list and recomposes
+result using `search-scope-recompose-occurrences'."
+
+  (mapcan
    #'(lambda (buffer)
-       (cons buffer (search-scope-occurrences thing buffer buf-limit)))
+       (search-scope-recompose-occurrences
+        buffer
+        (search-scope-occurrences thing buffer limit)))
    buffers))
 
 (defun search-scope-composite-other-buffer (scope &optional thing)
@@ -394,12 +425,12 @@ BUFFERS list."
 
   (let* ((buffers (search-scope-composite-buffers scope (current-buffer)))
          (pos (seq-position buffers (current-buffer)))
-         (default (cons (nth 1 buffers) nil)))
+         (default `((buffer . ,(nth 1 buffers)))))
     (cl-assert (length> buffers 0))
     (if thing
         (let ((list (search-scope-scattered-occurrences
                      thing (cdr buffers) 1)))
-          (or (car (seq-filter #'cdr list))
+          (or (car list)
               default))
       default)))
 
@@ -738,49 +769,72 @@ region. If NO-HISTORY is nil then new thing is added to
         (search-scope-add-to-history thing)
       thing)))
 
-(defun search-scope-thing-to-regexp (thing &optional trim-word)
-  "Creates a regexp from THING. If TRIM-WORD is not nil then word
-ending is trimmed by `search-scope-trim-word'."
+(defun search-scope-thing-to-regexp (thing &optional posix trim-word)
+  "Creates a regexp from THING. If POSIX is not nil then thing boundaries
+are marked by '\\b'. If TRIM-WORD is not nil then word ending is trimmed
+by `search-scope-trim-word'."
 
-  (let ((template (cond
-                   ((search-scope-is thing 'symbol) "\\b%s\\b")
-                   ((search-scope-is thing 'word)
-                    (if trim-word "\\b%s\\w*\\b" "\\b%s\\b"))
-                   ((search-scope-is thing 'filename) "%s\\b"))))
-    (when template
-      (format
-       template
-       (if (and (search-scope-is thing 'word) trim-word)
-           (search-scope-trim-word (car thing))
-         (search-scope-quote thing))))))
+  (let ((string
+         (if (and (search-scope-is thing 'word) trim-word)
+             (search-scope-trim-word (car thing))
+           (search-scope-quote thing))))
+    (cond
+     ((and (search-scope-is thing 'word) trim-word posix)
+      (concat "\\b" string "\\w*\\b"))
+     ((and (search-scope-is thing 'word) trim-word)
+      (concat "\\<" string "\\w*\\>"))
+     ((and posix (or (search-scope-is thing 'symbol)
+                     (search-scope-is thing 'word)))
+      (concat "\\b" string "\\b"))
+     ((search-scope-is thing 'symbol)
+      (concat "\\_<" string "\\_>"))
+     ((and (search-scope-is thing 'word))
+      (concat "\\<" string "\\>"))
+     ((search-scope-is thing 'filename)
+      (concat string "\\b")))))
 
 ;;;###autoload
-(defun search-scope-replace (thing new-name)
+(defun search-scope-replace (scope thing new-name &optional no-cache)
   "it renames THING to NEW-NAME in a current buffer using
 `query-replace-regexp'"
 
   (interactive
-   (let ((thing (search-scope-thing-at-point))
+   (let ((scope (search-scope-require-scope))
+         (thing (search-scope-thing-at-point))
          (search-scope-history (search-scope-simple-history t)))
      (unless thing
        (user-error "There is nothing at point"))
-     (list thing
+     (list scope
+           thing
            (read-string (format "Rename '%s' to: " (car thing))
                         (car thing) 'search-scope-history nil t))))
 
-  (cond
-   ((buffer-modified-p)
-    (user-error "Rename of '%s' is aborted since buffer '%s' is modified"
-                (car thing) (buffer-name (current-buffer))))
-   (t
+  (let* ((original-buf (current-buffer))
+         (path (buffer-file-name original-buf))
+         (regexp (or (search-scope-thing-to-regexp thing nil t)
+                     (concat "\\b" (search-scope-quote thing) "\\b")))
+         (action (cons (list #'display-buffer-same-window
+                             #'display-buffer-use-some-window)
+                       '((inhibit-switch-frame . t)))))
     (save-excursion
-      (let ((thing-regexp (cond ((search-scope-is thing 'symbol)
-                                 (format "\\_<%s\\_>" (car thing)))
-                                ((search-scope-is thing 'word)
-                                 (format "\\b%s" (car thing)))
-                                (t (format "\\b%s\\b" (search-scope-quote thing))))))
-        (goto-char (point-min))
-        (query-replace-regexp thing-regexp new-name))))))
+      (goto-char (point-min))
+      (query-replace-regexp regexp new-name))
+    (when path
+      (let ((alist (search-scope-check-composite scope path no-cache)))
+        (when (and alist (not (equal alist search-scope)))
+          (setf scope alist
+                search-scope alist))))
+    (let* ((buffers (cdr (search-scope-composite-buffers scope original-buf)))
+           (occurrences (search-scope-scattered-occurrences thing buffers 1)))
+      (dolist (buffer (mapcar #'(lambda (alist)
+                                  (alist-get 'buffer alist))
+                              occurrences))
+        (select-window (display-buffer buffer action))
+        (save-excursion
+          (goto-char (point-min))
+          (query-replace-regexp regexp new-name)))
+      (when buffers
+        (select-window (display-buffer original-buf action))))))
 
 ;;;###autoload
 (defun search-scope-grep (thing scope)
@@ -853,31 +907,31 @@ using `search-scope-display-part-function'."
 
   (let* ((path (or (buffer-file-name buffer)
                    (user-error "current buffer has no visited file")))
-         (relative (search-scope-relative-name scope path))
-         (composite (alist-get 'composite scope)))
-    (when (or (null composite ) no-cache)
-      (let ((composites (search-scope-find-composites scope))
-            (base (file-name-base relative)))
-        (setf composite (assoc-default base composites))
-        (if composite
-            (setf (alist-get 'composite scope) composite)
-          (user-error "%s is not a part of a composite" relative))))
-    ;; save scope after modification
-    (setf search-scope scope)
-    (let ((buf-occur (search-scope-composite-other-buffer scope thing))
-          (action (cons search-scope-display-part-function
-                        '((inhibit-switch-frame . t)))))
-      (cl-assert buf-occur)
-      (let ((w (display-buffer (car buf-occur) action))
-            (bounds (nth 2 (cadr buf-occur))))
-        (when bounds
-          (search-scope-add-to-history thing)
-          (with-current-buffer (car buf-occur)
-            (let ((other-thing (search-scope-get-thing (cdr thing))))
-              (unless (equal other-thing thing)
-                (set-window-point w (car bounds))
-                (search-scope-highlight bounds
-                                        search-scope-highlight-seconds)))))
-        (select-window w)))))
+         (alist (search-scope-check-composite scope path no-cache)))
+    (cond
+     ((and alist (not (equal alist scope)))
+      (setf scope alist
+            search-scope alist))
+     (alist)
+     (t
+      (user-error "%s is not a part of a composite" (buffer-name)))))
+
+  (let ((buf-occur (search-scope-composite-other-buffer scope thing))
+        (action (cons (list search-scope-display-part-function
+                            #'display-buffer-use-some-window)
+                      '((inhibit-switch-frame . t)))))
+    (cl-assert buf-occur)
+    (let* ((buffer (alist-get 'buffer buf-occur))
+           (bounds (alist-get 'match-offsets buf-occur))
+           (window (display-buffer buffer action)))
+      (when bounds
+        (search-scope-add-to-history thing)
+        (with-current-buffer buffer
+          (let ((other-thing (search-scope-get-thing (cdr thing))))
+            (unless (equal other-thing thing)
+              (set-window-point window (car bounds))
+              (search-scope-highlight bounds
+                                      search-scope-highlight-seconds)))))
+      (select-window window))))
 
 (provide 'search-scope-mode)
