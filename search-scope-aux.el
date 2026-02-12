@@ -21,3 +21,15 @@
      :regexp (and regexp (string> regexp ""))
 
      :file-regex (search-scope-to-path-regexp scope))))
+
+;;;###autoload
+(defun search-scope-index-projectile-files (scope excluding-dirs &optional regexp)
+  "Filters a list produced by `projectile-project-files'"
+
+  (when regexp
+    (cl-assert (memq (type-of regexp) '(cons string))))
+
+  (let* ((absolute (alist-get 'absolute scope))
+         (files (projectile-project-files absolute)))
+    (search-scope-filter-files files regexp excluding-dirs)))
+

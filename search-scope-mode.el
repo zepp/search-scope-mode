@@ -63,7 +63,8 @@ return nonempty string or nil"
   :group 'search-scope
   :type 'natnum)
 
-(defcustom search-scope-indexers '(search-scope-index-project-files)
+(defcustom search-scope-indexers '(search-scope-index-project-files
+                                   search-scope-native-index-files)
   "set of functions to build a file list of a
 scope. `search-scope-index-files' sequentially calls entries
 until non-empty list is returned. Indexer receives a root and a
@@ -203,40 +204,71 @@ directory."
      (result (expand-file-name result))
      (fallback (expand-file-name fallback)))))
 
-(defun search-scope-index-project-files (scope exclude-dirs &optional regexp)
-  "Filters a list produced by `project-files'"
+(defun search-scope-exclude-dirs (paths dirs)
+
+  (let ((regexp (string-join (mapcar #'regexp-quote dirs) "\\|")))
+    (if (string-empty-p regexp)
+        paths
+      (seq-remove
+       (apply-partially #'string-match-p regexp)
+       paths))))
+
+(defun search-scope-filter-files (paths match &optional excluding-dirs)
+  "Filters a PATHS list by MATCH regexp."
+
+  (cl-assert (and (listp paths)))
+  (let ((paths (search-scope-exclude-dirs paths excluding-dirs)))
+    (cond
+     ((consp match)
+      (mapcan
+       #'(lambda (match)
+           (seq-filter (apply-partially #'string-match-p match)
+                       paths))
+       match))
+     ((stringp match)
+      (seq-filter (apply-partially #'string-match-p match)
+                  paths))
+     (t paths))))
+
+(defun search-scope-index-project-files (scope excluding-dirs &optional regexp)
+  "Indexes SCOPE using `project-files' and helper functions to
+filter a result."
 
   (when regexp
     (cl-assert (memq (type-of regexp) '(cons string))))
 
-  (let* ((root (alist-get 'root scope))
+  (let* ((project-files-relative-names t)
+         (root (alist-get 'root scope))
          (absolute (alist-get 'absolute scope))
          (proj (project-current nil root))
-         (exclude-regexp (when exclude-dirs
-                           (string-join (mapcar #'regexp-quote exclude-dirs)
-                                        "\\|"))))
+         (dirs (unless (search-scope-root-p scope)
+                 (list absolute))))
     (when proj
-      ;; requires Emacs 30.x
-      (let* ((project-files-relative-names t)
-             (dirs (unless (search-scope-root-p scope)
-                     (list absolute)))
-             (files (project-files proj dirs))
-             (list (if exclude-regexp
-                       (seq-remove
-                        (apply-partially #'string-match-p exclude-regexp)
-                        files)
-                     files)))
-        (cond
-         ((consp regexp)
-          (mapcan
-           #'(lambda (regexp)
-               (seq-filter (apply-partially #'string-match-p regexp)
-                           list))
-           regexp))
-         ((stringp regexp)
-          (seq-filter (apply-partially #'string-match-p regexp)
-                      list))
-         (t list))))))
+      (let ((files (search-scope-filter-files
+                    (project-files proj dirs)
+                    regexp
+                    excluding-dirs))
+            (default-directory absolute))
+        (if (and files (file-name-absolute-p (car files)))
+            (mapcar #'file-relative-name files)
+          files)))))
+
+(defun search-scope-native-index-files (scope excluding-dirs &optional regexp)
+  "Indexes SCOPE using `directory-files-recursively'."
+
+  (let* ((absolute (alist-get 'absolute scope))
+         (get-files (apply-partially #'directory-files-recursively absolute))
+         (default-directory absolute))
+    (mapcar
+     #'file-relative-name
+     (search-scope-exclude-dirs
+      (cond
+       ((consp regexp)
+        (nconc (mapcan get-files regexp)))
+       ((stringp regexp)
+        (funcall get-files regexp))
+       (t (funcall get-files ".*")))
+      excluding-dirs))))
 
 (defun search-scope-index-files (scope &optional regexp exclude-related-scopes)
   "Returns a list of files located inside of SCOPE using indexers from the
