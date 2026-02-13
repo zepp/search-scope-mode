@@ -29,7 +29,7 @@
   (when regexp
     (cl-assert (memq (type-of regexp) '(cons string))))
 
-  (let* ((absolute (alist-get 'absolute scope))
-         (files (projectile-project-files absolute)))
+  (when-let* ((absolute (alist-get 'absolute scope))
+              (files (projectile-project-files absolute)))
     (search-scope-filter-files files regexp excluding-dirs)))
 

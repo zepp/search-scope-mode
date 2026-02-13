@@ -189,8 +189,8 @@ less then `search-scope-word-min-length'"
 (defun search-scope-project-root (path)
   "Looks for a root directory of PATH using `project-root'"
 
-  (let ((proj (project-current nil (file-name-directory path))))
-    (when proj (project-root proj))))
+  (when-let ((proj (project-current nil (file-name-directory path))))
+    (project-root proj)))
 
 (defun search-scope-discover-root (path &optional fallback)
   "iterates over `search-scope-root-functions' to find a root
@@ -237,21 +237,20 @@ filter a result."
   (when regexp
     (cl-assert (memq (type-of regexp) '(cons string))))
 
-  (let* ((project-files-relative-names t)
-         (root (alist-get 'root scope))
-         (absolute (alist-get 'absolute scope))
-         (proj (project-current nil root))
-         (dirs (unless (search-scope-root-p scope)
-                 (list absolute))))
-    (when proj
-      (let ((files (search-scope-filter-files
-                    (project-files proj dirs)
-                    regexp
-                    excluding-dirs))
-            (default-directory absolute))
-        (if (and files (file-name-absolute-p (car files)))
-            (mapcar #'file-relative-name files)
-          files)))))
+  (when-let* ((project-files-relative-names t)
+              (root (alist-get 'root scope))
+              (absolute (alist-get 'absolute scope))
+              (proj (project-current nil root)))
+    (let* ((dirs (unless (search-scope-root-p scope)
+                   (list absolute)))
+           (files (search-scope-filter-files
+                   (project-files proj dirs)
+                   regexp
+                   excluding-dirs))
+           (default-directory absolute))
+      (if (and files (file-name-absolute-p (car files)))
+          (mapcar #'file-relative-name files)
+        files))))
 
 (defun search-scope-native-index-files (scope excluding-dirs &optional regexp)
   "Indexes SCOPE using `directory-files-recursively'."
@@ -264,7 +263,7 @@ filter a result."
      (search-scope-exclude-dirs
       (cond
        ((consp regexp)
-        (nconc (mapcan get-files regexp)))
+        (mapcan get-files regexp))
        ((stringp regexp)
         (funcall get-files regexp))
        (t (funcall get-files ".*")))
@@ -277,15 +276,13 @@ using REGEXP. REGEXP can be a string or a list of strings. if
 EXCLUDE-RELATED-SCOPES is non nil then related scope direcotries
 are excluded."
 
-  (let* ((relatives (mapcar
-                     #'(lambda (scope)
-                         (alist-get 'relative scope))
-                     (search-scope-related-scopes scope)))
-         (exclude (when (and (search-scope-root-p scope)
-                             exclude-related-scopes)
-                    (delete nil relatives))))
+  (let ((dirs (when (and exclude-related-scopes (search-scope-root-p scope))
+                (delete nil
+                        (mapcar
+                         (apply-partially #'alist-get 'relative)
+                         (search-scope-related-scopes scope))))))
     (seq-some #'(lambda (fun)
-                  (funcall fun scope exclude regexp))
+                  (funcall fun scope dirs regexp))
               search-scope-indexers)))
 
 (defun search-scope-get-engine (&optional mode)
@@ -401,11 +398,10 @@ if ABBREVIATE is non nil."
         (composite (alist-get 'composite scope)))
     (if (and composite (null no-cache))
         scope
-      (let* ((composites (search-scope-find-composites scope))
-             (composite (assoc-default (file-name-base relative) composites)))
-        (when composite
-          (setf (alist-get 'composite scope) composite)
-          scope)))))
+      (when-let* ((composites (search-scope-find-composites scope))
+                  (composite (cdr (assoc (file-name-base relative) composites))))
+        (setf (alist-get 'composite scope) composite)
+        scope))))
 
 (defun search-scope-composite-buffers (scope &optional head)
   "visits composite parts and returns a list of buffers"
@@ -564,29 +560,27 @@ directory path."
   (cl-assert (and
               (file-name-absolute-p dir)
               (file-directory-p dir)))
-  (let ((root-dir (search-scope-discover-root dir)))
-    (when root-dir
-      (let ((scopes (seq-filter
-                     #'(lambda (scope)
-                         (string= (alist-get 'root scope)
-                                  root-dir))
-                     search-scope-list)))
-        (search-scope-closest dir scopes)))))
+  (when-let* ((root-dir (search-scope-discover-root dir))
+              (scopes (seq-filter
+                       #'(lambda (scope)
+                           (string= (alist-get 'root scope)
+                                    root-dir))
+                       search-scope-list)))
+    (search-scope-closest dir scopes)))
 
 (defun search-scope-discover (dir &optional root)
 
   (cl-assert (and
               (file-name-absolute-p dir)
               (file-directory-p dir)))
-  (let ((root-dir (search-scope-discover-root dir root)))
-    (when root-dir
-      (let ((scopes (search-scope-discover-scopes root-dir)))
-        (setf search-scope-list
-              (seq-sort #'search-scope-greater-p
-                        (nconc search-scope-list scopes)))
-        (message "Root scope is discovered in %s"
-                 (abbreviate-file-name root-dir))
-        (search-scope-closest dir scopes)))))
+  (when-let* ((root-dir (search-scope-discover-root dir root))
+              (scopes (search-scope-discover-scopes root-dir)))
+    (setf search-scope-list
+          (seq-sort #'search-scope-greater-p
+                    (nconc search-scope-list scopes)))
+    (message "Root scope is discovered in %s"
+             (abbreviate-file-name root-dir))
+    (search-scope-closest dir scopes)))
 
 (defun search-scope-link-buffer (buffer &optional relink)
   "Links BUFFER to an existing scope from `search-scope-list'."
@@ -621,11 +615,10 @@ local variable."
   "tries to link a current buffer to a scope"
 
   (unless (search-scope-link-buffer (current-buffer))
-    (let ((scope (search-scope-discover
-                  (expand-file-name default-directory))))
-      (when scope
-        (search-scope-mode 1)
-        (setf search-scope (copy-alist scope))))))
+    (when-let ((scope (search-scope-discover
+                       (expand-file-name default-directory))))
+      (search-scope-mode 1)
+      (setf search-scope (copy-alist scope)))))
 
 (defun search-scope-read-adjust (scope &optional path)
   "Reads a scope from a list of related scopes of SCOPE and adjusts
@@ -711,11 +704,10 @@ one according to user input."
 NAME. `search-scope-searched-things' is rearranged in case of successful
 lookup."
 
-  (let* ((alist search-scope-searched-things)
-         (thing (assoc name alist)))
-    (when thing
-      (setf search-scope-searched-things
-            (cons thing (delete thing alist))))
+  (when-let* ((alist search-scope-searched-things)
+              (thing (assoc name alist)))
+    (setf search-scope-searched-things
+          (cons thing (delete thing alist)))
     thing))
 
 (defun search-scope-simple-history (&optional omit-first-thing)
@@ -741,20 +733,20 @@ be a cons or a list."
       (run-at-time seconds nil destructor)
       overlay)))
 
-(defun search-scope-get-thing (thing-type &optional trim)
+(defun search-scope-get-thing (thing-type &optional trim no-highlight)
   "returns thing at point as `cons'"
 
-  (let ((bounds (bounds-of-thing-at-point thing-type)))
-    (when bounds
-      (search-scope-highlight bounds
-                              search-scope-highlight-seconds)
+  (when-let ((bounds (bounds-of-thing-at-point thing-type)))
+    (search-scope-highlight bounds
+                            (and (not no-highlight)
+                                 search-scope-highlight-seconds))
+    (let ((string (buffer-substring-no-properties
+                   (car bounds)
+                   (cdr bounds))))
       (cons
-       (let ((string (buffer-substring-no-properties
-                      (car bounds)
-                      (cdr bounds))))
-         (if trim
-             (string-trim string trim trim)
-           string))
+       (if trim
+           (string-trim string trim trim)
+         string)
        thing-type))))
 
 (defun search-scope-get-contextual-thing (buffer)
@@ -856,8 +848,8 @@ by `search-scope-trim-word'."
         (when (and alist (not (equal alist search-scope)))
           (setf scope alist
                 search-scope alist))))
-    (let* ((buffers (cdr (search-scope-composite-buffers scope original-buf)))
-           (occurrences (search-scope-scattered-occurrences thing buffers 1)))
+    (when-let* ((buffers (cdr (search-scope-composite-buffers scope original-buf)))
+                (occurrences (search-scope-scattered-occurrences thing buffers 1)))
       (dolist (buffer (mapcar #'(lambda (alist)
                                   (alist-get 'buffer alist))
                               occurrences))
@@ -865,8 +857,7 @@ by `search-scope-trim-word'."
         (save-excursion
           (goto-char (point-min))
           (query-replace-regexp regexp new-name)))
-      (when buffers
-        (select-window (display-buffer original-buf action))))))
+      (select-window (display-buffer original-buf action)))))
 
 ;;;###autoload
 (defun search-scope-grep (thing scope)
@@ -953,17 +944,18 @@ using `search-scope-display-part-function'."
                             #'display-buffer-use-some-window)
                       '((inhibit-switch-frame . t)))))
     (cl-assert buf-occur)
-    (let* ((buffer (alist-get 'buffer buf-occur))
-           (bounds (alist-get 'match-offsets buf-occur))
-           (window (display-buffer buffer action)))
-      (when bounds
+    (when-let* ((buffer (alist-get 'buffer buf-occur))
+                (window (display-buffer buffer action)))
+      (select-window window)
+      (when-let ((bounds (alist-get 'match-offsets buf-occur)))
         (search-scope-add-to-history thing)
-        (with-current-buffer buffer
-          (let ((other-thing (search-scope-get-thing (cdr thing))))
-            (unless (equal other-thing thing)
-              (set-window-point window (car bounds))
-              (search-scope-highlight bounds
-                                      search-scope-highlight-seconds)))))
-      (select-window window))))
+        (let ((other-thing (search-scope-get-thing (cdr thing) nil t)))
+          (if (and other-thing (equal other-thing thing))
+              ;; highlight a thing only if it is the same
+              (search-scope-get-thing (cdr thing))
+            (set-window-point window (car bounds))
+            (search-scope-highlight
+             bounds
+             search-scope-highlight-seconds)))))))
 
 (provide 'search-scope-mode)
