@@ -31,5 +31,5 @@
 
   (when-let* ((absolute (alist-get 'absolute scope))
               (files (projectile-project-files absolute)))
-    (search-scope-filter-files files regexp excluding-dirs)))
+    (cons t (search-scope-filter-files files regexp excluding-dirs))))
 

@@ -79,6 +79,11 @@ relative paths or nil."
   :group 'search-scope
   :type '(repeat string))
 
+(defcustom search-scope-ignore-file ".ignore"
+  "ignore file name to load an additinal list of ignored directories"
+  :group 'search-scope
+  :type 'string)
+
 (defcustom search-scope-root-strategy 'same-files
   "list to keep discovered scopes"
   :group 'search-scope
@@ -206,7 +211,7 @@ directory."
 
 (defun search-scope-exclude-dirs (paths dirs)
 
-  (let ((regexp (string-join (mapcar #'regexp-quote dirs) "\\|")))
+  (let ((regexp (string-join dirs "\\|")))
     (if (string-empty-p regexp)
         paths
       (seq-remove
@@ -248,26 +253,41 @@ filter a result."
                    regexp
                    excluding-dirs))
            (default-directory absolute))
-      (if (and files (file-name-absolute-p (car files)))
-          (mapcar #'file-relative-name files)
-        files))))
+      (cons t
+            (if (and files (file-name-absolute-p (car files)))
+                (mapcar #'file-relative-name files)
+              files)))))
 
 (defun search-scope-native-index-files (scope excluding-dirs &optional regexp)
   "Indexes SCOPE using `directory-files-recursively'."
 
-  (let* ((absolute (alist-get 'absolute scope))
-         (get-files (apply-partially #'directory-files-recursively absolute))
-         (default-directory absolute))
-    (mapcar
-     #'file-relative-name
-     (search-scope-exclude-dirs
-      (cond
-       ((consp regexp)
-        (mapcan get-files regexp))
-       ((stringp regexp)
-        (funcall get-files regexp))
-       (t (funcall get-files ".*")))
-      excluding-dirs))))
+  (when-let* ((absolute (alist-get 'absolute scope))
+              (get-files (apply-partially #'directory-files-recursively absolute))
+              (fun (cond
+                    ((consp regexp)
+                     (apply-partially #'mapcan get-files regexp))
+                    ((stringp regexp)
+                     (apply-partially #'directory-files-recursively absolute regexp)))))
+    (cons t
+          (mapcar
+           #'file-relative-name
+           (search-scope-exclude-dirs (funcall fun) excluding-dirs)))))
+
+(defun search-scope-load-ignored-dirs (scope file-name)
+  "Reads FILE-NAME content into a temporary buffer and returns a list of
+ignored directories. Wildcards are replacef by '.*'"
+
+  (when-let* ((file (expand-file-name file-name (alist-get 'absolute scope)))
+              (p (file-exists-p file)))
+    (with-current-buffer (or (get-file-buffer file)
+                             (find-file-noselect file))
+      (let ((list))
+        (save-excursion
+          (goto-char (point-min))
+          (while (re-search-forward "^/?\\([^\n]+/\\)$" nil t)
+            (when-let* ((line (substring-no-properties (match-string 1))))
+              (push (string-replace "\\*" ".*" (regexp-quote line)) list))))
+        list))))
 
 (defun search-scope-index-files (scope &optional regexp exclude-related-scopes)
   "Returns a list of files located inside of SCOPE using indexers from the
@@ -276,14 +296,17 @@ using REGEXP. REGEXP can be a string or a list of strings. if
 EXCLUDE-RELATED-SCOPES is non nil then related scope direcotries
 are excluded."
 
-  (let ((dirs (when (and exclude-related-scopes (search-scope-root-p scope))
-                (delete nil
-                        (mapcar
-                         (apply-partially #'alist-get 'relative)
-                         (search-scope-related-scopes scope))))))
-    (seq-some #'(lambda (fun)
-                  (funcall fun scope dirs regexp))
-              search-scope-indexers)))
+  (let ((dirs (search-scope-load-ignored-dirs scope search-scope-ignore-file)))
+    (when (and exclude-related-scopes (search-scope-root-p scope))
+      (setf dirs (nconc
+                  (mapcar
+                   #'(lambda (scope)
+                       (regexp-quote (alist-get 'relative scope)))
+                   (remove scope (search-scope-related-scopes scope)))
+                  dirs)))
+    (cdr (seq-some #'(lambda (fun)
+                       (funcall fun scope dirs regexp))
+                   search-scope-indexers))))
 
 (defun search-scope-get-engine (&optional mode)
   "Searches engine for MODE. If one is not specified then
@@ -614,7 +637,8 @@ local variable."
 (defun search-scope-on-file-found ()
   "tries to link a current buffer to a scope"
 
-  (unless (search-scope-link-buffer (current-buffer))
+  (unless (or (equal (file-name-nondirectory (buffer-file-name)) search-scope-ignore-file)
+              (search-scope-link-buffer (current-buffer)))
     (when-let ((scope (search-scope-discover
                        (expand-file-name default-directory))))
       (search-scope-mode 1)
