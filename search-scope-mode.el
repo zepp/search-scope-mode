@@ -426,18 +426,25 @@ if ABBREVIATE is non nil."
         (setf (alist-get 'composite scope) composite)
         scope))))
 
+(defun search-scope-get-composite-buffer (scope relative)
+  "provides a composite buffer by RELATIVE path."
+
+  (let ((composite (alist-get 'composite scope))
+        (absolute (search-scope-expand-name scope relative))
+        ;; to avoid recursion
+        (find-file-hook (remove #'search-scope-on-file-found find-file-hook)))
+    (or (get-file-buffer absolute)
+        (with-current-buffer (find-file-noselect absolute t)
+          (let ((scope (search-scope-link-buffer (current-buffer))))
+            (setf (alist-get 'composite scope) composite
+                  search-scope scope))
+          (current-buffer)))))
+
 (defun search-scope-composite-buffers (scope &optional head)
   "visits composite parts and returns a list of buffers"
 
   (let* ((composite (alist-get 'composite scope))
-         (get-or-find #'(lambda (relative)
-                          (let ((path (search-scope-expand-name scope relative)))
-                            (or (get-file-buffer path)
-                                (with-current-buffer (find-file-noselect path)
-                                  (let ((scope (search-scope-link-buffer (current-buffer))))
-                                    (setf (alist-get 'composite scope) composite
-                                          search-scope scope))
-                                  (current-buffer)))))))
+         (get-or-find (apply-partially #'search-scope-get-composite-buffer scope)))
     (if (and composite head)
         (let* ((buffers (mapcar get-or-find composite))
                (pos (seq-position buffers head))
