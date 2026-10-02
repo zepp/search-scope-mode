@@ -194,7 +194,7 @@ less then `search-scope-word-min-length'"
 (defun search-scope-project-root (path)
   "Looks for a root directory of PATH using `project-root'"
 
-  (when-let ((proj (project-current nil (file-name-directory path))))
+  (when-let* ((proj (project-current nil (file-name-directory path))))
     (project-root proj)))
 
 (defun search-scope-discover-root (path &optional fallback)
@@ -646,7 +646,7 @@ local variable."
 
   (unless (or (equal (file-name-nondirectory (buffer-file-name)) search-scope-ignore-file)
               (search-scope-link-buffer (current-buffer)))
-    (when-let ((scope (search-scope-discover
+    (when-let* ((scope (search-scope-discover
                        (expand-file-name default-directory))))
       (search-scope-mode 1)
       (setf search-scope (copy-alist scope)))))
@@ -767,7 +767,7 @@ be a cons or a list."
 (defun search-scope-get-thing (thing-type &optional trim no-highlight)
   "returns thing at point as `cons'"
 
-  (when-let ((bounds (bounds-of-thing-at-point thing-type)))
+  (when-let* ((bounds (bounds-of-thing-at-point thing-type)))
     (search-scope-highlight bounds
                             (and (not no-highlight)
                                  search-scope-highlight-seconds))
@@ -978,7 +978,7 @@ using `search-scope-display-part-function'."
     (when-let* ((buffer (alist-get 'buffer buf-occur))
                 (window (display-buffer buffer action)))
       (select-window window)
-      (when-let ((bounds (alist-get 'match-offsets buf-occur)))
+      (when-let* ((bounds (alist-get 'match-offsets buf-occur)))
         (search-scope-add-to-history thing)
         (let ((other-thing (search-scope-get-thing (cdr thing) nil t)))
           (if (and other-thing (equal other-thing thing))
